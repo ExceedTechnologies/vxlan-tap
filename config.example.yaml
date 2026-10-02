@@ -1,0 +1,33 @@
+# vxlan-tap configuration (point-to-point VXLAN)
+
+# Underlay IP of this Windows host to bind the VXLAN socket to. (required)
+local_ip: 10.0.0.1
+
+# Underlay IP of the remote VTEP. Packets from any other source are dropped. (required)
+remote_ip: 10.0.0.2
+
+# VXLAN Network Identifier, 0..16777215. Must match the remote side. (required)
+vni: 100
+
+# UDP port used locally and on the remote. Default 4789 (Linux kernel's
+# legacy default is 8472 if the peer was created without "dstport 4789").
+port: 4789
+
+# TAP adapter: Windows connection name (as shown by "vxlan-tap list-taps")
+# or its {GUID}. Empty selects the first TAP-Windows6 adapter found.
+tap: ""
+
+# Add a host route (/32, or /128 for IPv6) to remote_ip via the gateway
+# that the interface owning local_ip currently uses, and remove it on
+# shutdown. This keeps the tunnel's own traffic on the underlay when the
+# TAP adapter carries a default gateway or a route covering remote_ip.
+# The route is determined once, at startup. Default true.
+pin_remote_route: true
+
+# debug | info | warn | error. "debug" also logs counters every 60s.
+log_level: info
+
+# Optional log file. Strongly recommended when running as a service,
+# where there is no console; otherwise only start/stop/fatal errors are
+# recorded (in the Windows Application event log).
+log_file: ""
