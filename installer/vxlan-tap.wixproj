@@ -3,7 +3,7 @@
        Builds vxlan-tap.exe with Go for the platform, then the MSI. -->
   <PropertyGroup>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
-    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.1</ProductVersion>
     <GoArch Condition="'$(Platform)' == 'x64'">amd64</GoArch>
     <GoArch Condition="'$(Platform)' == 'ARM64'">arm64</GoArch>
     <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))\</RepoRoot>
@@ -21,6 +21,8 @@
 
   <Target Name="GoBuild" BeforeTargets="BeforeBuild">
     <Error Condition="'$(GoArch)' == ''" Text="Unsupported Platform '$(Platform)'; use x64 or ARM64." />
+    <Exec Command="go tool go-winres make --in cmd/vxlan-tap/winres/winres.json --out cmd/vxlan-tap/rsrc --arch $(GoArch) --product-version $(ProductVersion) --file-version $(ProductVersion)"
+          WorkingDirectory="$(RepoRoot)" />
     <Exec Command="go build -trimpath -ldflags=&quot;-s -w&quot; -o &quot;$(GoExe)&quot; ./cmd/vxlan-tap"
           WorkingDirectory="$(RepoRoot)"
           EnvironmentVariables="GOOS=windows;GOARCH=$(GoArch);CGO_ENABLED=0" />

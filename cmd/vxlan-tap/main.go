@@ -2,6 +2,10 @@
 // segment with one or more remote VTEPs.
 package main
 
+// Embeds the icon, manifest and version info (cmd/vxlan-tap/winres/winres.json) as
+// rsrc_windows_*.syso, which go build links in. The installer build passes the real version.
+//go:generate go tool go-winres make --in winres/winres.json --out rsrc --arch amd64,arm64
+
 import (
 	"context"
 	"errors"

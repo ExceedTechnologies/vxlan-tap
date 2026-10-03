@@ -2,6 +2,7 @@
 .vscode
 .DS_Store
 *.exe
+*.syso
 installer/bin/
 installer/obj/
 tap-driver/

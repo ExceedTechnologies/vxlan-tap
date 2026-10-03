@@ -48,9 +48,15 @@ dedicated adapter rather than one OpenVPN also uses.
 ## Build
 
 ```
+go generate ./cmd/vxlan-tap
 go build -o vxlan-tap.exe ./cmd/vxlan-tap
 go test ./...
 ```
+
+`go generate` embeds the icon (`installer\icon.png`), product name,
+description and version from `cmd\vxlan-tap\winres\winres.json` into
+the exe; without it the exe builds but has none of them. The version stays
+0.0.0.0 unless the installer build sets it.
 
 `go test ./...` skips the tests that need a real adapter. To run them
 against an installed TAP adapter that nothing else is using:

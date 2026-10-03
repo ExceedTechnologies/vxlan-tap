@@ -1,0 +1,51 @@
+{
+  "RT_GROUP_ICON": {
+    "APP": {
+      "0000": "../../../installer/icon.png"
+    }
+  },
+  "RT_MANIFEST": {
+    "#1": {
+      "0409": {
+        "identity": {},
+        "description": "VXLAN TAP for Windows",
+        "minimum-os": "win10",
+        "execution-level": "as invoker",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "system",
+        "disable-theming": false,
+        "disable-window-filtering": false,
+        "high-resolution-scrolling-aware": false,
+        "ultra-high-resolution-scrolling-aware": false,
+        "long-path-aware": true,
+        "printer-driver-isolation": false,
+        "gdi-scaling": false,
+        "segment-heap": false,
+        "use-common-controls-v6": false
+      }
+    }
+  },
+  "RT_VERSION": {
+    "#1": {
+      "0000": {
+        "fixed": {
+          "file_version": "0.0.0.0",
+          "product_version": "0.0.0.0"
+        },
+        "info": {
+          "0409": {
+            "CompanyName": "Exceed Technologies LLC",
+            "FileDescription": "Connects a Windows host to a VXLAN network using a TAP adapter",
+            "FileVersion": "0.0.0.0",
+            "InternalName": "vxlan-tap",
+            "LegalCopyright": "Copyright © Exceed Technologies LLC",
+            "OriginalFilename": "vxlan-tap.exe",
+            "ProductName": "VXLAN TAP for Windows",
+            "ProductVersion": "0.0.0.0"
+          }
+        }
+      }
+    }
+  }
+}

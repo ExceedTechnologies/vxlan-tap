@@ -9,6 +9,8 @@
                  Condition="INSTALL_SERVICE = &quot;1&quot;" />
 
     <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="dialog.bmp" />
 
     <UI Id="VxlanTapUI">
       <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
