@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/pprof"
+	"syscall"
 	"text/tabwriter"
 
 	"golang.org/x/sys/windows/svc"
@@ -140,7 +141,9 @@ func runConsole(cfgPath, cpuProfile string) error {
 		log.Info("writing CPU profile on exit", "file", cpuProfile)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// Windows delivers closing the console window, logoff and shutdown as
+	// SIGTERM, and kills the process a few seconds later.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return runTunnel(ctx, cfg, log)
 }
@@ -189,6 +192,13 @@ func runTunnel(ctx context.Context, cfg *config.Config, log *slog.Logger) error 
 			}
 			log.Info("pinned route to remote VTEP", "dest", pinned.Dest, "via", via,
 				"ifindex", pinned.InterfaceIndex, "already_present", pinned.Existed)
+			if pinned.Existed {
+				// It may be an administrator's own static route rather than
+				// one left by a run that did not shut down cleanly, so it is
+				// not ours to delete.
+				log.Info("leaving pre-existing route in place on shutdown", "dest", pinned.Dest)
+				continue
+			}
 			defer func() {
 				if err := pinned.Remove(); err != nil {
 					log.Warn("failed to remove pinned route", "dest", pinned.Dest, "err", err)

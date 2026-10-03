@@ -109,8 +109,9 @@ func Pin(local, remote netip.Addr) (*Pinned, error) {
 			}
 			return nil, fmt.Errorf("route: add host route %s via %s: %w", p.Dest, via, err)
 		}
-		// Same prefix, next hop and interface: most likely left behind by
-		// an earlier run that did not shut down cleanly. Adopt it.
+		// Same prefix, next hop and interface: left behind by an earlier
+		// run that did not shut down cleanly, or added by an administrator.
+		// It already does the job; Existed tells the caller not to remove it.
 		p.Existed = true
 	}
 	return p, nil

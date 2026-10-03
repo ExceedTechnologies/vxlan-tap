@@ -98,17 +98,27 @@ func Install(name, exePath string, args ...string) error {
 	}
 	defer s.Close()
 
-	// Restart after 5s if the tunnel dies (e.g. adapter briefly removed).
-	s.SetRecoveryActions([]mgr.RecoveryAction{
+	// Restart after 5s if the tunnel dies (e.g. adapter briefly removed, or
+	// not yet present at boot).
+	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
 		{Type: mgr.ServiceRestart, Delay: 5 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 30 * time.Second},
 		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
-	}, 24*60*60)
+	}, 24*60*60); err != nil {
+		s.Delete()
+		return fmt.Errorf("set recovery actions: %w", err)
+	}
+	// Without this the SCM applies the actions only when the process
+	// crashes, not when Execute reports a non-zero exit code.
+	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		s.Delete()
+		return fmt.Errorf("set recovery actions: %w", err)
+	}
 
 	// Clear a source left behind by a service removed without Uninstall,
 	// such as by the MSI, since registering fails if it already exists.
 	eventlog.Remove(name)
-	if err := eventlog.InstallAsEventCreate(name,eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
+	if err := eventlog.InstallAsEventCreate(name, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
 		s.Delete()
 		return fmt.Errorf("register event log source: %w", err)
 	}

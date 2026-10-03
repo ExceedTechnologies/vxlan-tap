@@ -242,11 +242,12 @@ func (t *Tunnel) udpToTAP(ctx context.Context, fail func(error)) {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return
 			}
-			// On Windows a previous send to an unreachable port surfaces
-			// here as WSAECONNRESET; it is not fatal.
-			t.Stats.RxErrors.Add(1)
-			t.log.Debug("UDP receive failed", "err", err)
-			continue
+			// Go disables the ICMP unreachable reports (WSAECONNRESET,
+			// WSAENETRESET) that Windows would otherwise deliver here, so
+			// what remains, such as the underlay address going away,
+			// repeats on every call. Retrying would spin; fail instead.
+			fail(fmt.Errorf("tunnel: UDP receive: %w", err))
+			return
 		}
 		peer, ok := t.peerOf[from.Addr().Unmap()]
 		if !ok {

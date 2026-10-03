@@ -113,6 +113,7 @@ func Open(a Adapter) (*Device, error) {
 		return nil, err
 	}
 	if d.port, err = windows.CreateIoCompletionPort(h, 0, 0, 1); err != nil {
+		d.setMediaStatus(false)
 		windows.CloseHandle(h)
 		return nil, fmt.Errorf("tap: CreateIoCompletionPort: %w", err)
 	}

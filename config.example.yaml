@@ -31,7 +31,8 @@ tap: ""
 # that the interface owning local_ip currently uses, and remove it on
 # shutdown. This keeps the tunnel's own traffic on the underlay when the
 # TAP adapter carries a default gateway or a route covering a remote.
-# The route is determined once, at startup. Default true.
+# The route is determined once, at startup. An identical route that is
+# already present is used as is and left in place on shutdown. Default true.
 pin_remote_route: true
 
 # debug | info | warn | error. "debug" also logs counters every 60s.
