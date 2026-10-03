@@ -105,7 +105,10 @@ func Install(name, exePath string, args ...string) error {
 		{Type: mgr.ServiceRestart, Delay: 60 * time.Second},
 	}, 24*60*60)
 
-	if err := eventlog.InstallAsEventCreate(name, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
+	// Clear a source left behind by a service removed without Uninstall,
+	// such as by the MSI, since registering fails if it already exists.
+	eventlog.Remove(name)
+	if err := eventlog.InstallAsEventCreate(name,eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
 		s.Delete()
 		return fmt.Errorf("register event log source: %w", err)
 	}

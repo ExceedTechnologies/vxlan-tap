@@ -1,5 +1,5 @@
-// Command vxlan-tap bridges an OpenVPN TAP-Windows6 adapter onto a
-// point-to-point VXLAN tunnel.
+// Command vxlan-tap bridges an OpenVPN TAP-Windows6 adapter onto a VXLAN
+// segment with one or more remote VTEPs.
 package main
 
 import (
@@ -174,23 +174,25 @@ func runTunnel(ctx context.Context, cfg *config.Config, log *slog.Logger) error 
 	// to connected, which is when Windows activates any routes (such as a
 	// default gateway) configured on it.
 	if cfg.PinRoute() {
-		pinned, err := route.Pin(cfg.Local, cfg.Remote)
-		if err != nil {
-			return fmt.Errorf("%w (set pin_remote_route: false to skip)", err)
-		}
-		via := "on-link"
-		if pinned.NextHop.IsValid() {
-			via = pinned.NextHop.String()
-		}
-		log.Info("pinned route to remote VTEP", "dest", pinned.Dest, "via", via,
-			"ifindex", pinned.InterfaceIndex, "already_present", pinned.Existed)
-		defer func() {
-			if err := pinned.Remove(); err != nil {
-				log.Warn("failed to remove pinned route", "err", err)
-			} else {
-				log.Info("removed pinned route", "dest", pinned.Dest)
+		for _, remote := range cfg.Remotes {
+			pinned, err := route.Pin(cfg.Local, remote)
+			if err != nil {
+				return fmt.Errorf("%w (set pin_remote_route: false to skip)", err)
 			}
-		}()
+			via := "on-link"
+			if pinned.NextHop.IsValid() {
+				via = pinned.NextHop.String()
+			}
+			log.Info("pinned route to remote VTEP", "dest", pinned.Dest, "via", via,
+				"ifindex", pinned.InterfaceIndex, "already_present", pinned.Existed)
+			defer func() {
+				if err := pinned.Remove(); err != nil {
+					log.Warn("failed to remove pinned route", "dest", pinned.Dest, "err", err)
+				} else {
+					log.Info("removed pinned route", "dest", pinned.Dest)
+				}
+			}()
+		}
 	}
 	dev, err := tap.Open(adapter)
 	if err != nil {
@@ -210,11 +212,15 @@ func runTunnel(ctx context.Context, cfg *config.Config, log *slog.Logger) error 
 			"mtu", mtu, "recommended", maxMTU)
 	}
 
+	remotes := make([]netip.AddrPort, len(cfg.Remotes))
+	for i, r := range cfg.Remotes {
+		remotes[i] = netip.AddrPortFrom(r, uint16(cfg.Port))
+	}
 	tun, err := tunnel.New(tunnel.Config{
-		Local:  netip.AddrPortFrom(cfg.Local, uint16(cfg.Port)),
-		Remote: netip.AddrPortFrom(cfg.Remote, uint16(cfg.Port)),
-		VNI:    cfg.VNIValue(),
-		Logger: log,
+		Local:   netip.AddrPortFrom(cfg.Local, uint16(cfg.Port)),
+		Remotes: remotes,
+		VNI:     cfg.VNIValue(),
+		Logger:  log,
 	}, dev)
 	if err != nil {
 		return err

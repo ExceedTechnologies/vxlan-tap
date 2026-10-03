@@ -14,8 +14,18 @@ func TestParseDefaults(t *testing.T) {
 	if c.Port != 4789 || c.Level != slog.LevelInfo || c.VNIValue() != 100 || !c.PinRoute() {
 		t.Fatalf("unexpected defaults: %+v", c)
 	}
-	if c.Local.String() != "10.0.0.1" || c.Remote.String() != "10.0.0.2" {
-		t.Fatalf("bad addrs: %v %v", c.Local, c.Remote)
+	if c.Local.String() != "10.0.0.1" || len(c.Remotes) != 1 || c.Remotes[0].String() != "10.0.0.2" {
+		t.Fatalf("bad addrs: %v %v", c.Local, c.Remotes)
+	}
+}
+
+func TestParseRemoteList(t *testing.T) {
+	c, err := Parse([]byte("local_ip: 10.0.0.1\nremote_ips: [10.0.0.2, 10.0.0.3]\nvni: 1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Remotes) != 2 || c.Remotes[0].String() != "10.0.0.2" || c.Remotes[1].String() != "10.0.0.3" {
+		t.Fatalf("remotes: %v", c.Remotes)
 	}
 }
 
@@ -43,6 +53,12 @@ func TestParseErrors(t *testing.T) {
 	tests := []struct {
 		name, yaml, want string
 	}{
+		{"missing remote", "local_ip: 10.0.0.1\nvni: 1\n", "remote_ip or remote_ips is required"},
+		{"both remotes", base + "remote_ips: [10.0.0.3]\n", "not both"},
+		{"bad list entry", "local_ip: 10.0.0.1\nremote_ips: [10.0.0.2, nope]\nvni: 1\n", "remote_ips[1]"},
+		{"duplicate remote", "local_ip: 10.0.0.1\nremote_ips: [10.0.0.2, 10.0.0.2]\nvni: 1\n", "listed twice"},
+		{"list has local", "local_ip: 10.0.0.1\nremote_ips: [10.0.0.1]\nvni: 1\n", "must differ"},
+		{"mixed family list", "local_ip: 10.0.0.1\nremote_ips: [10.0.0.2, fd00::2]\nvni: 1\n", "same address family"},
 		{"missing local", "remote_ip: 10.0.0.2\nvni: 1\n", "local_ip is required"},
 		{"bad remote", "local_ip: 10.0.0.1\nremote_ip: nope\nvni: 1\n", "remote_ip"},
 		{"mixed family", "local_ip: 10.0.0.1\nremote_ip: fd00::2\nvni: 1\n", "same address family"},

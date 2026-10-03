@@ -63,19 +63,23 @@ func startPair(t testing.TB, vniA, vniB uint32) (a, b *Tunnel, tapA, tapB *fakeT
 	tapA.in = make(chan []byte, 1024)
 	tapB.out = make(chan []byte, 1024)
 	var err error
-	a, err = New(Config{Local: loopback(0), Remote: loopback(1), VNI: vniA, Logger: quiet}, tapA)
+	a, err = New(Config{Local: loopback(0), Remotes: []netip.AddrPort{loopback(1)}, VNI: vniA, Logger: quiet}, tapA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err = New(Config{Local: loopback(0), Remote: a.LocalAddr(), VNI: vniB, Logger: quiet}, tapB)
+	b, err = New(Config{Local: loopback(0), Remotes: []netip.AddrPort{a.LocalAddr()}, VNI: vniB, Logger: quiet}, tapB)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.cfg.Remote = b.LocalAddr()
+	a.setPeers([]netip.AddrPort{b.LocalAddr()})
+	runAll(t, a, b)
+	return a, b, tapA, tapB
+}
 
+func runAll(t testing.TB, tuns ...*Tunnel) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
-	for _, tun := range []*Tunnel{a, b} {
+	for _, tun := range tuns {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -85,16 +89,33 @@ func startPair(t testing.TB, vniA, vniB uint32) (a, b *Tunnel, tapA, tapB *fakeT
 		}()
 	}
 	t.Cleanup(func() { cancel(); wg.Wait() })
-	return a, b, tapA, tapB
 }
 
 func frame(payload string) []byte {
-	f := []byte{
-		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, // dst
-		0x02, 0x00, 0x00, 0x00, 0x00, 0x01, // src
-		0x08, 0x00, // IPv4
-	}
+	return frameTo(broadcast, macA, payload)
+}
+
+var (
+	broadcast = mac{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	macA      = mac{0x02, 0, 0, 0, 0, 0x0a}
+	macB      = mac{0x02, 0, 0, 0, 0, 0x0b}
+	macC      = mac{0x02, 0, 0, 0, 0, 0x0c}
+	macX      = mac{0x02, 0, 0, 0, 0, 0xee} // never seen
+)
+
+func frameTo(dst, src mac, payload string) []byte {
+	f := append(dst[:], src[:]...)
+	f = append(f, 0x08, 0x00) // IPv4
 	return append(f, payload...)
+}
+
+func expectNone(t *testing.T, ch chan []byte) {
+	t.Helper()
+	select {
+	case p := <-ch:
+		t.Fatalf("unexpected frame % x", p)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 func recv(t *testing.T, ch chan []byte) []byte {
@@ -175,9 +196,111 @@ func TestDropsMalformedAndForeign(t *testing.T) {
 	}
 }
 
+// TestMultiplePeers runs a hub (A) with two spokes (B, C) on distinct
+// loopback IPs, since peers are told apart by IP address.
+func TestMultiplePeers(t *testing.T) {
+	ips := []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}
+	var (
+		tuns [3]*Tunnel
+		taps [3]*fakeTAP
+	)
+	for i, ip := range ips {
+		taps[i] = newFakeTAP()
+		local := netip.AddrPortFrom(netip.MustParseAddr(ip), 0)
+		tun, err := New(Config{Local: local, Remotes: []netip.AddrPort{loopback(1)}, VNI: 7, Logger: quiet}, taps[i])
+		if err != nil {
+			for _, prev := range tuns[:i] {
+				prev.conn.Close()
+				prev.tap.Close()
+			}
+			t.Skipf("cannot bind %s: %v", ip, err)
+		}
+		tuns[i] = tun
+	}
+	a, b, c := tuns[0], tuns[1], tuns[2]
+	if err := a.setPeers([]netip.AddrPort{b.LocalAddr(), c.LocalAddr()}); err != nil {
+		t.Fatal(err)
+	}
+	b.setPeers([]netip.AddrPort{a.LocalAddr()})
+	c.setPeers([]netip.AddrPort{a.LocalAddr()})
+	runAll(t, a, b, c)
+	tapA, tapB, tapC := taps[0], taps[1], taps[2]
+
+	// Broadcast from A is flooded to both spokes.
+	bc := frameTo(broadcast, macA, "hello all")
+	tapA.in <- bc
+	if got := recv(t, tapB.out); !bytes.Equal(got, bc) {
+		t.Fatalf("B got % x", got)
+	}
+	if got := recv(t, tapC.out); !bytes.Equal(got, bc) {
+		t.Fatalf("C got % x", got)
+	}
+
+	// Unknown unicast is flooded too.
+	tapA.in <- frameTo(macX, macA, "who")
+	recv(t, tapB.out)
+	recv(t, tapC.out)
+
+	// A learns macB and macC from their replies...
+	tapB.in <- frameTo(macA, macB, "from B")
+	recv(t, tapA.out)
+	tapC.in <- frameTo(macA, macC, "from C")
+	recv(t, tapA.out)
+
+	// ...and then sends unicast only to the right peer.
+	toB := frameTo(macB, macA, "just B")
+	tapA.in <- toB
+	if got := recv(t, tapB.out); !bytes.Equal(got, toB) {
+		t.Fatalf("B got % x", got)
+	}
+	expectNone(t, tapC.out)
+
+	toC := frameTo(macC, macA, "just C")
+	tapA.in <- toC
+	if got := recv(t, tapC.out); !bytes.Equal(got, toC) {
+		t.Fatalf("C got % x", got)
+	}
+	expectNone(t, tapB.out)
+
+	if n := a.Stats.TxFlooded.Load(); n != 2 {
+		t.Fatalf("tx_flooded = %d, want 2", n)
+	}
+}
+
+func TestFDB(t *testing.T) {
+	f := newFDB()
+	sec := int64(time.Second)
+	if _, ok := f.lookup(macB, 0); ok {
+		t.Fatal("empty FDB hit")
+	}
+	f.learn(macB, 1, 0)
+	if p, ok := f.lookup(macB, 10*sec); !ok || p != 1 {
+		t.Fatalf("lookup = %d, %v", p, ok)
+	}
+	f.learn(macB, 0, 20*sec) // moved to another peer
+	if p, _ := f.lookup(macB, 20*sec); p != 0 {
+		t.Fatalf("after move: peer %d", p)
+	}
+	age := int64(fdbAgeing)
+	if _, ok := f.lookup(macB, 20*sec+age); ok {
+		t.Fatal("entry did not age out")
+	}
+	f.learn(macC, 1, 20*sec+age)
+	if n := f.expire(20*sec + age); n != 1 {
+		t.Fatalf("expire left %d entries, want 1", n)
+	}
+}
+
+func TestDuplicatePeerRejected(t *testing.T) {
+	r := loopback(4789)
+	if _, err := New(Config{Local: loopback(0), Remotes: []netip.AddrPort{r, r}, Logger: quiet}, newFakeTAP()); err == nil {
+		t.Fatal("duplicate remote accepted")
+	}
+}
+
 func TestTAPReadErrorIsFatal(t *testing.T) {
 	tap := newFakeTAP()
-	tun, err := New(Config{Local: loopback(0), Remote: loopback(9), VNI: 1, Logger: quiet}, tap)
+	tun, err := New(Config{Local: loopback(0), Remotes: []netip.AddrPort{loopback(9)}, VNI: 1, Logger: quiet}, tap)
 	if err != nil {
 		t.Fatal(err)
 	}

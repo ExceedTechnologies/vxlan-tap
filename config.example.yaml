@@ -1,10 +1,20 @@
-# vxlan-tap configuration (point-to-point VXLAN)
+# vxlan-tap configuration
 
 # Underlay IP of this Windows host to bind the VXLAN socket to. (required)
 local_ip: 10.0.0.1
 
-# Underlay IP of the remote VTEP. Packets from any other source are dropped. (required)
+# Underlay IP of the remote VTEP. Packets from any other source are dropped.
+# Set either remote_ip (one peer) or remote_ips (several peers). (required)
 remote_ip: 10.0.0.2
+
+# Several remote VTEPs. Broadcast, multicast and unknown unicast frames are
+# sent to every peer; unicast to a MAC learned from a peer goes only to it.
+# Peers are identified by IP address, so each must be different. Frames are
+# not relayed between peers, so they must also reach each other directly
+# (a full mesh) if they need to talk.
+#remote_ips:
+#  - 10.0.0.2
+#  - 10.0.0.3
 
 # VXLAN Network Identifier, 0..16777215. Must match the remote side. (required)
 vni: 100
@@ -17,10 +27,10 @@ port: 4789
 # or its {GUID}. Empty selects the first TAP-Windows6 adapter found.
 tap: ""
 
-# Add a host route (/32, or /128 for IPv6) to remote_ip via the gateway
+# Add a host route (/32, or /128 for IPv6) to each remote via the gateway
 # that the interface owning local_ip currently uses, and remove it on
 # shutdown. This keeps the tunnel's own traffic on the underlay when the
-# TAP adapter carries a default gateway or a route covering remote_ip.
+# TAP adapter carries a default gateway or a route covering a remote.
 # The route is determined once, at startup. Default true.
 pin_remote_route: true
 

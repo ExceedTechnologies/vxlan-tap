@@ -14,22 +14,24 @@ import (
 )
 
 type Config struct {
-	LocalIP  string `yaml:"local_ip"`
-	RemoteIP string `yaml:"remote_ip"`
-	VNI      *int64 `yaml:"vni"`
-	Port     int    `yaml:"port"`
-	TAP      string `yaml:"tap"`
-	LogLevel string `yaml:"log_level"`
-	LogFile  string `yaml:"log_file"`
+	LocalIP string `yaml:"local_ip"`
+	// Exactly one of RemoteIP (a single peer) and RemoteIPs must be set.
+	RemoteIP  string   `yaml:"remote_ip"`
+	RemoteIPs []string `yaml:"remote_ips"`
+	VNI       *int64   `yaml:"vni"`
+	Port      int      `yaml:"port"`
+	TAP       string   `yaml:"tap"`
+	LogLevel  string   `yaml:"log_level"`
+	LogFile   string   `yaml:"log_file"`
 
-	// PinRemoteRoute adds a host route to remote_ip via the current
+	// PinRemoteRoute adds a host route to each remote via the current
 	// underlay gateway while the tunnel is up. Defaults to true.
 	PinRemoteRoute *bool `yaml:"pin_remote_route"`
 
 	// Parsed values, filled in by Validate.
-	Local  netip.Addr `yaml:"-"`
-	Remote netip.Addr `yaml:"-"`
-	Level  slog.Level `yaml:"-"`
+	Local   netip.Addr   `yaml:"-"`
+	Remotes []netip.Addr `yaml:"-"`
+	Level   slog.Level   `yaml:"-"`
 }
 
 // Load reads, defaults and validates the config file at path.
@@ -66,14 +68,8 @@ func (c *Config) Validate() error {
 	if c.Local, err = parseIP("local_ip", c.LocalIP); err != nil {
 		return err
 	}
-	if c.Remote, err = parseIP("remote_ip", c.RemoteIP); err != nil {
+	if err := c.validateRemotes(); err != nil {
 		return err
-	}
-	if c.Local.Is4() != c.Remote.Is4() {
-		return fmt.Errorf("config: local_ip and remote_ip must be the same address family")
-	}
-	if c.Local == c.Remote {
-		return fmt.Errorf("config: local_ip and remote_ip must differ")
 	}
 	if c.VNI == nil {
 		return fmt.Errorf("config: vni is required")
@@ -96,6 +92,42 @@ func (c *Config) Validate() error {
 	}
 	if err := c.Level.UnmarshalText([]byte(c.LogLevel)); err != nil {
 		return fmt.Errorf("config: log_level %q: must be debug, info, warn or error", c.LogLevel)
+	}
+	return nil
+}
+
+func (c *Config) validateRemotes() error {
+	list, field := c.RemoteIPs, "remote_ips[%d]"
+	switch {
+	case c.RemoteIP != "" && len(c.RemoteIPs) > 0:
+		return fmt.Errorf("config: set remote_ip or remote_ips, not both")
+	case c.RemoteIP != "":
+		list, field = []string{c.RemoteIP}, "remote_ip"
+	case len(c.RemoteIPs) == 0:
+		return fmt.Errorf("config: remote_ip or remote_ips is required")
+	}
+	c.Remotes = c.Remotes[:0]
+	seen := make(map[netip.Addr]bool)
+	for i, s := range list {
+		name := field
+		if len(c.RemoteIPs) > 0 {
+			name = fmt.Sprintf(field, i)
+		}
+		a, err := parseIP(name, s)
+		if err != nil {
+			return err
+		}
+		if c.Local.Is4() != a.Is4() {
+			return fmt.Errorf("config: local_ip and %s must be the same address family", name)
+		}
+		if a == c.Local {
+			return fmt.Errorf("config: local_ip and %s must differ", name)
+		}
+		if seen[a] {
+			return fmt.Errorf("config: %s: %s is listed twice", name, a)
+		}
+		seen[a] = true
+		c.Remotes = append(c.Remotes, a)
 	}
 	return nil
 }

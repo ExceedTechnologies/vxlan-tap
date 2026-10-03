@@ -1,5 +1,7 @@
-// Package tunnel forwards Ethernet frames between a TAP device and a
-// point-to-point VXLAN peer.
+// Package tunnel forwards Ethernet frames between a TAP device and one or
+// more VXLAN peers. With several peers it learns which peer each overlay
+// MAC address is behind and floods broadcast, multicast and unknown
+// unicast frames to all of them.
 package tunnel
 
 import (
@@ -28,21 +30,22 @@ const (
 	sockBuf = 4 << 20
 )
 
-// Config describes one point-to-point VXLAN tunnel.
+// Config describes one VXLAN tunnel.
 type Config struct {
-	Local  netip.AddrPort // underlay address to bind
-	Remote netip.AddrPort // remote VTEP
-	VNI    uint32
-	Logger *slog.Logger
+	Local   netip.AddrPort   // underlay address to bind
+	Remotes []netip.AddrPort // remote VTEPs; at most one per IP address
+	VNI     uint32
+	Logger  *slog.Logger
 }
 
 // Stats are the tunnel counters.
 type Stats struct {
-	TxPackets, TxBytes atomic.Uint64 // TAP -> UDP
+	TxPackets, TxBytes atomic.Uint64 // TAP -> UDP, per datagram sent
 	RxPackets, RxBytes atomic.Uint64 // UDP -> TAP
+	TxFlooded          atomic.Uint64 // TAP frames sent to every peer
 
 	DropShortFrame atomic.Uint64 // TAP frame shorter than an Ethernet header
-	DropWrongPeer  atomic.Uint64 // UDP from someone other than Remote
+	DropWrongPeer  atomic.Uint64 // UDP from an address that is not a peer
 	DropBadHeader  atomic.Uint64 // malformed VXLAN header
 	DropWrongVNI   atomic.Uint64
 	DropShortInner atomic.Uint64 // inner frame shorter than an Ethernet header
@@ -54,6 +57,7 @@ func (s *Stats) logAttrs() []any {
 	return []any{
 		"tx_packets", s.TxPackets.Load(), "tx_bytes", s.TxBytes.Load(),
 		"rx_packets", s.RxPackets.Load(), "rx_bytes", s.RxBytes.Load(),
+		"tx_flooded", s.TxFlooded.Load(),
 		"drop_short_frame", s.DropShortFrame.Load(),
 		"drop_wrong_peer", s.DropWrongPeer.Load(),
 		"drop_bad_header", s.DropBadHeader.Load(),
@@ -70,6 +74,11 @@ type Tunnel struct {
 	tap   io.ReadWriteCloser
 	conn  *net.UDPConn
 	Stats Stats
+
+	peers  []netip.AddrPort
+	peerOf map[netip.Addr]int // peer IP -> index in peers
+	fdb    *fdb               // nil with a single peer
+	epoch  time.Time
 }
 
 // New binds the UDP socket. The tunnel takes ownership of dev and closes it
@@ -82,6 +91,11 @@ func New(cfg Config, dev io.ReadWriteCloser) (*Tunnel, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	t := &Tunnel{cfg: cfg, log: cfg.Logger, tap: dev, epoch: time.Now()}
+	if err := t.setPeers(cfg.Remotes); err != nil {
+		dev.Close()
+		return nil, err
+	}
 	conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(cfg.Local))
 	if err != nil {
 		dev.Close()
@@ -93,8 +107,33 @@ func New(cfg Config, dev io.ReadWriteCloser) (*Tunnel, error) {
 	if err := conn.SetWriteBuffer(sockBuf); err != nil {
 		cfg.Logger.Warn("could not enlarge UDP send buffer", "err", err)
 	}
-	return &Tunnel{cfg: cfg, log: cfg.Logger, tap: dev, conn: conn}, nil
+	t.conn = conn
+	return t, nil
 }
+
+func (t *Tunnel) setPeers(remotes []netip.AddrPort) error {
+	if len(remotes) == 0 {
+		return errors.New("tunnel: no remote VTEPs")
+	}
+	t.peers = make([]netip.AddrPort, len(remotes))
+	t.peerOf = make(map[netip.Addr]int, len(remotes))
+	for i, r := range remotes {
+		r = netip.AddrPortFrom(r.Addr().Unmap(), r.Port())
+		if _, dup := t.peerOf[r.Addr()]; dup {
+			return fmt.Errorf("tunnel: remote %s listed twice", r.Addr())
+		}
+		t.peers[i] = r
+		t.peerOf[r.Addr()] = i
+	}
+	t.fdb = nil
+	if len(t.peers) > 1 {
+		t.fdb = newFDB()
+	}
+	return nil
+}
+
+// now is a monotonic clock in nanoseconds for FDB ageing.
+func (t *Tunnel) now() int64 { return int64(time.Since(t.epoch)) }
 
 // LocalAddr returns the bound UDP address.
 func (t *Tunnel) LocalAddr() netip.AddrPort {
@@ -121,7 +160,7 @@ func (t *Tunnel) Run(ctx context.Context) error {
 	go func() { defer wg.Done(); t.tapToUDP(ctx, fail) }()
 	go func() { defer wg.Done(); t.udpToTAP(ctx, fail) }()
 
-	t.log.Info("tunnel up", "local", t.LocalAddr(), "remote", t.cfg.Remote, "vni", t.cfg.VNI)
+	t.log.Info("tunnel up", "local", t.LocalAddr(), "remotes", t.peers, "vni", t.cfg.VNI)
 
 	ticker := time.NewTicker(statsEvery)
 	defer ticker.Stop()
@@ -131,7 +170,11 @@ loop:
 		case <-ctx.Done():
 			break loop
 		case <-ticker.C:
-			t.log.Debug("stats", t.Stats.logAttrs()...)
+			attrs := t.Stats.logAttrs()
+			if t.fdb != nil {
+				attrs = append(attrs, "fdb_entries", t.fdb.expire(t.now()))
+			}
+			t.log.Debug("stats", attrs...)
 		}
 	}
 
@@ -158,23 +201,41 @@ func (t *Tunnel) tapToUDP(ctx context.Context, fail func(error)) {
 			t.Stats.DropShortFrame.Add(1)
 			continue
 		}
-		if _, err := t.conn.WriteToUDPAddrPort(buf[:vxlan.HeaderLen+n], t.cfg.Remote); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			// Transient (e.g. no route, ICMP unreachable); keep going.
-			t.Stats.TxErrors.Add(1)
-			t.log.Debug("UDP send failed", "err", err)
+		pkt := buf[:vxlan.HeaderLen+n]
+		if len(t.peers) == 1 {
+			t.send(ctx, pkt, 0)
 			continue
 		}
-		t.Stats.TxPackets.Add(1)
-		t.Stats.TxBytes.Add(uint64(n))
+		frame := frameBuf[:n]
+		if frame[0]&1 == 0 { // unicast destination
+			if p, ok := t.fdb.lookup(mac(frame[0:6]), t.now()); ok {
+				t.send(ctx, pkt, p)
+				continue
+			}
+		}
+		t.Stats.TxFlooded.Add(1)
+		for p := range t.peers {
+			t.send(ctx, pkt, p)
+		}
 	}
+}
+
+// send transmits one encapsulated frame to peer p. Errors are transient
+// (no route, ICMP unreachable) and only counted.
+func (t *Tunnel) send(ctx context.Context, pkt []byte, p int) {
+	if _, err := t.conn.WriteToUDPAddrPort(pkt, t.peers[p]); err != nil {
+		if ctx.Err() == nil {
+			t.Stats.TxErrors.Add(1)
+			t.log.Debug("UDP send failed", "peer", t.peers[p], "err", err)
+		}
+		return
+	}
+	t.Stats.TxPackets.Add(1)
+	t.Stats.TxBytes.Add(uint64(len(pkt) - vxlan.HeaderLen))
 }
 
 func (t *Tunnel) udpToTAP(ctx context.Context, fail func(error)) {
 	buf := make([]byte, maxDatagram)
-	remote := t.cfg.Remote.Addr()
 	for {
 		n, from, err := t.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
@@ -187,7 +248,8 @@ func (t *Tunnel) udpToTAP(ctx context.Context, fail func(error)) {
 			t.log.Debug("UDP receive failed", "err", err)
 			continue
 		}
-		if from.Addr().Unmap() != remote {
+		peer, ok := t.peerOf[from.Addr().Unmap()]
+		if !ok {
 			t.Stats.DropWrongPeer.Add(1)
 			continue
 		}
@@ -203,6 +265,9 @@ func (t *Tunnel) udpToTAP(ctx context.Context, fail func(error)) {
 		if len(frame) < minFrame {
 			t.Stats.DropShortInner.Add(1)
 			continue
+		}
+		if t.fdb != nil && frame[6]&1 == 0 { // learn unicast source MACs
+			t.fdb.learn(mac(frame[6:12]), peer, t.now())
 		}
 		if _, err := t.tap.Write(frame); err != nil {
 			if ctx.Err() != nil {
