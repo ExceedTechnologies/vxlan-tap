@@ -88,8 +88,8 @@ func Install(name, exePath string, args ...string) error {
 		return fmt.Errorf("service %q already exists", name)
 	}
 	s, err := m.CreateService(name, exePath, mgr.Config{
-		DisplayName:  "VXLAN TAP bridge (" + name + ")",
-		Description:  "Bridges an OpenVPN TAP adapter onto a point-to-point VXLAN tunnel.",
+		DisplayName:  "VXLAN TAP Service (" + name + ")",
+		Description:  "Connects a virtual TAP adapter to a VXLAN segment.",
 		StartType:    mgr.StartAutomatic,
 		Dependencies: []string{"Tcpip"},
 	}, args...)

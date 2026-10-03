@@ -46,7 +46,7 @@ $DriverDir = Join-Path $PSScriptRoot 'driver'
 $Devcon = Join-Path $DriverDir 'devcon.exe'
 $Exe = Join-Path $PSScriptRoot 'vxlan-tap.exe'
 $ConfigPath = Join-Path $PSScriptRoot 'config.yaml'
-$ServiceName = 'VXLAN TAP Service'
+$ServiceName = 'vxlan-tap'
 
 function Log([string]$msg) { Write-Output "vxlan-tap setup: $msg" }
 
