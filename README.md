@@ -1,10 +1,10 @@
 # vxlan-tap
 
-Allows you to attach a Windows host to a VXLAN segment.  
-`vxlan-tap` bridges Ethernet frames between upstream VTEPs and the 
-OpenVPN TAP-Windows6 virtual adapter on a local machine.
+Allows you to attach a Windows host to a VXLAN segment using a virtual TAP adapter.
 
 This project has been tested on Windows 11 and Windows Server 2025.
+
+This project was created using AI.  It has been human tested for operation.
 
 ## Build
 
@@ -13,7 +13,7 @@ Go executable, optionally digitally sign it, then wrap it into a MSI
 for installation.
 
 If building the MSI, you will need to copy the latest version of the
-OpenVPN TAP-Windows6 distribution into the folder tap-driver in the
+[OpenVPN TAP-Windows6 distribution](https://github.com/OpenVPN/tap-windows6) into the folder tap-driver in the
 root of the project.
 
 Example command to build for development on amd64:
@@ -26,7 +26,7 @@ build.ps1 -Version 1.0.2 -Platform x64 -NoSign
 The MSI installer will automatically perform the following tasks:
 
 1. Installs `vxlan-tap.exe` to `C:\Program Files\vxlan-tap`.
-2. If no TAP-Windows6 driver is installed, installs the bundled one from
+2. If no [TAP-Windows6 driver](https://github.com/OpenVPN/tap-windows6) is installed, installs the bundled one from
    `tap-driver` and creates an adapter named `VXLAN`.
 3. Adds the firewall rule `vxlan-tap VXLAN (UDP-In)` for inbound UDP on
    the VXLAN port.
@@ -39,7 +39,6 @@ The MSI installer will automatically perform the following tasks:
 Most installation properties are available as MSI properties for automated
 or unattended installations.  Running the MSI interactively will present
 a wizard that allow customization of these parameters.
-
 
 | Property Name | Description |
 | ------------- | ----------- |
