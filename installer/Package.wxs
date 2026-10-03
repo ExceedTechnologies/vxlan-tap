@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  vxlan-tap MSI. Build with installer\build.ps1 (or dotnet build vxlan-tap.wixproj -p:Platform=x64|ARM64).
+
+  Properties (msiexec ... NAME=value):
+    VXLAN_PORT         UDP port to allow inbound. Default 4789.
+    VXLAN_REMOTE_IPS   Remote addresses the firewall rule allows, comma separated. Default: any.
+                       When set, also writes config.yaml with its single addresses as remote_ips,
+                       unless WRITE_CONFIG=0.
+    WRITE_CONFIG       0 to not write config.yaml even with VXLAN_REMOTE_IPS. The wizard's
+                       checkbox for it starts unchecked unless WRITE_CONFIG=1 is given.
+    VXLAN_LOCAL_IP     local_ip for config.yaml. Default: the address Windows uses to reach the
+                       first remote.
+    VXLAN_VNI          vni for config.yaml. Default 100.
+    ADD_FIREWALL_RULE  0 to skip the firewall rule, e.g. when Group Policy manages it. Default 1.
+    TAP_ADAPTER_NAME   Name for the adapter created with the driver. Default vxlan0.
+    INSTALL_SERVICE    1 to install and start the vxlan-tap service with config.yaml. Default 0.
+                       Remembered for upgrades and repairs.
+
+  An interactive install (double-click, or msiexec /i without /qn) shows a wizard (Ui.wxs) for
+  these properties, prefilled with the defaults or the values given on the command line.
+
+  Install steps, after the files are copied to Program Files\vxlan-tap:
+    1. If no TAP-Windows6 driver is installed, install the bundled one and create an adapter.
+    2. Add the firewall rule "vxlan-tap VXLAN (UDP-In)" for inbound UDP VXLAN_PORT.
+    3. With VXLAN_REMOTE_IPS and not WRITE_CONFIG=0, write config.yaml. A different existing one is kept as config.yaml.bak.
+    4. With INSTALL_SERVICE=1, install the service unless it exists, and start it.
+  Uninstall removes that rule, the service, and the driver and its adapters if step 1 installed
+  them. It leaves config.yaml and the log file. A major upgrade keeps the driver.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Package Name="vxlan-tap"
+           Manufacturer="vxlan-tap"
+           Version="$(ProductVersion)"
+           UpgradeCode="c54b205f-4d38-4ed6-a424-871040812c55"
+           Scope="perMachine"
+           InstallerVersion="500">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="VXLAN_PORT" Value="4789" Secure="yes" />
+    <Property Id="VXLAN_REMOTE_IPS" Secure="yes" />
+    <Property Id="ADD_FIREWALL_RULE" Value="1" Secure="yes" />
+    <Property Id="TAP_ADAPTER_NAME" Value="vxlan0" Secure="yes" />
+    <Property Id="VXLAN_LOCAL_IP" Secure="yes" />
+    <Property Id="VXLAN_VNI" Value="100" Secure="yes" />
+    <!-- No default: unset means write, so silent installs with VXLAN_REMOTE_IPS still get a
+         config. The wizard sets it to "1" or "0". -->
+    <Property Id="WRITE_CONFIG" Secure="yes" />
+
+    <!-- INSTALL_SERVICE comes from the command line, or else from the value saved by the last
+         install, so that an upgrade puts back the service that uninstalling the old version
+         removed. -->
+    <Property Id="INSTALL_SERVICE" Secure="yes">
+      <RegistrySearch Root="HKLM" Key="SOFTWARE\vxlan-tap" Name="InstallService" Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="CMDLINE_INSTALL_SERVICE" Value="[INSTALL_SERVICE]" Before="AppSearch" Sequence="both" />
+    <SetProperty Id="INSTALL_SERVICE" Value="[CMDLINE_INSTALL_SERVICE]" After="AppSearch" Sequence="both"
+                 Condition="CMDLINE_INSTALL_SERVICE" />
+    <Property Id="ARPCOMMENTS" Value="Bridges a TAP-Windows6 adapter onto a VXLAN segment" />
+    <!-- There is one feature, so maintenance offers only Repair and Remove. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- Set when an earlier install left a config.yaml, which INSTALL_SERVICE can use without
+         VXLAN_REMOTE_IPS. The wizard only offers the service when there is a config. -->
+    <Property Id="EXISTING_CONFIG">
+      <DirectorySearch Id="InstallFolderSearch" Path="[ProgramFiles64Folder]vxlan-tap" Depth="0">
+        <FileSearch Name="config.yaml" />
+      </DirectorySearch>
+    </Property>
+
+    <UIRef Id="VxlanTapUI" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="vxlan-tap">
+        <Directory Id="DRIVERFOLDER" Name="driver" />
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="DriverFiles" />
+      <ComponentGroupRef Id="Firewall" />
+      <ComponentRef Id="RememberInstallService" />
+    </Feature>
+
+    <Component Id="RememberInstallService" Directory="INSTALLFOLDER" Condition="INSTALL_SERVICE">
+      <RegistryValue Root="HKLM" Key="SOFTWARE\vxlan-tap" Name="InstallService" Type="string" Value="[INSTALL_SERVICE]" KeyPath="yes" />
+    </Component>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component>
+        <File Source="$(GoExe)" Name="vxlan-tap.exe" KeyPath="yes" />
+        <!-- A service registered with "vxlan-tap install" holds the exe open: stop it for
+             upgrades and remove it on uninstall. Ignored when there is no such service. -->
+        <ServiceControl Id="StopVxlanTapService" Name="vxlan-tap" Stop="both" Remove="uninstall" Wait="yes" />
+      </Component>
+      <Component>
+        <File Source="setup-helper.ps1" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Source="$(RepoRoot)config.example.yaml" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Source="$(RepoRoot)README.md" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="DriverFiles" Directory="DRIVERFOLDER">
+      <Component>
+        <File Source="$(TapDriverDir)OemVista.inf" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Source="$(TapDriverDir)tap0901.cat" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Source="$(TapDriverDir)tap0901.sys" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Source="$(TapDriverDir)devcon.exe" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- The firewall extension adds the rule when its component installs and removes it when the
+         component is uninstalled. Only one of these two components installs: with no
+         VXLAN_REMOTE_IPS the rule allows any remote address. -->
+    <ComponentGroup Id="Firewall" Directory="INSTALLFOLDER">
+      <Component Id="FirewallRuleAnyRemote" Condition="ADD_FIREWALL_RULE &lt;&gt; &quot;0&quot; AND NOT VXLAN_REMOTE_IPS">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\vxlan-tap" Name="FirewallRuleAnyRemote" Type="string" Value="[VXLAN_PORT]" KeyPath="yes" />
+        <fw:FirewallException Id="VxlanInAnyRemote" Name="vxlan-tap VXLAN (UDP-In)"
+                              Description="Inbound VXLAN from the remote VTEPs. Added by the vxlan-tap installer."
+                              Protocol="udp" Port="[VXLAN_PORT]" Profile="all" Scope="any" />
+      </Component>
+      <Component Id="FirewallRuleRemoteIps" Condition="ADD_FIREWALL_RULE &lt;&gt; &quot;0&quot; AND VXLAN_REMOTE_IPS">
+        <RegistryValue Root="HKLM" Key="SOFTWARE\vxlan-tap" Name="FirewallRuleRemoteIps" Type="string" Value="[VXLAN_REMOTE_IPS]" KeyPath="yes" />
+        <fw:FirewallException Id="VxlanInRemoteIps" Name="vxlan-tap VXLAN (UDP-In)"
+                              Description="Inbound VXLAN from the remote VTEPs. Added by the vxlan-tap installer."
+                              Protocol="udp" Port="[VXLAN_PORT]" Profile="all">
+          <fw:RemoteAddress Value="[VXLAN_REMOTE_IPS]" />
+        </fw:FirewallException>
+      </Component>
+    </ComponentGroup>
+
+    <!-- The driver actions run setup-helper.ps1 through WixQuietExec, which logs its output to the
+         MSI log and fails the install on a non-zero exit code. Their shared command line prefix is
+         in SetupHelperCmd, which keeps each CustomAction target under 255 characters (ICE03). -->
+    <SetProperty Id="SetupHelperCmd" Sequence="execute" After="CostFinalize"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]setup-helper.ps1&quot;" />
+    <SetProperty Id="InstallTapDriver" Sequence="execute" Before="InstallTapDriver"
+                 Value="[SetupHelperCmd] -Action InstallDriver -AdapterName &quot;[TAP_ADAPTER_NAME]&quot;" />
+    <SetProperty Id="RollbackTapDriver" Sequence="execute" Before="RollbackTapDriver"
+                 Value="[SetupHelperCmd] -Action RemoveDriver" />
+    <SetProperty Id="UninstallTapDriver" Sequence="execute" Before="UninstallTapDriver"
+                 Value="[SetupHelperCmd] -Action RemoveDriver" />
+
+    <SetProperty Id="WriteVxlanConfig" Sequence="execute" Before="WriteVxlanConfig"
+                 Value="[SetupHelperCmd] -Action WriteConfig -RemoteIps &quot;[VXLAN_REMOTE_IPS]&quot; -LocalIp &quot;[VXLAN_LOCAL_IP]&quot; -Vni &quot;[VXLAN_VNI]&quot; -Port &quot;[VXLAN_PORT]&quot; -AdapterName &quot;[TAP_ADAPTER_NAME]&quot;" />
+    <SetProperty Id="InstallVxlanService" Sequence="execute" Before="InstallVxlanService"
+                 Value="[SetupHelperCmd] -Action InstallService" />
+    <SetProperty Id="RollbackVxlanService" Sequence="execute" Before="RollbackVxlanService"
+                 Value="[SetupHelperCmd] -Action RemoveService" />
+
+    <CustomAction Id="InstallTapDriver" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="RollbackTapDriver" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+    <CustomAction Id="UninstallTapDriver" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <CustomAction Id="WriteVxlanConfig" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="InstallVxlanService" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <CustomAction Id="RollbackVxlanService" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="rollback" Impersonate="no" Return="ignore" />
+
+    <!-- Rollback only undoes a fresh install: during an upgrade the driver may belong to the
+         previous version. The service rollback also leaves a service that runs another exe. Uninstall keeps the driver when an upgrade is replacing this version. -->
+    <InstallExecuteSequence>
+      <Custom Action="RollbackTapDriver" Before="InstallTapDriver"
+              Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED" />
+      <Custom Action="InstallTapDriver" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="WriteVxlanConfig" After="InstallTapDriver" Condition="NOT REMOVE AND VXLAN_REMOTE_IPS AND WRITE_CONFIG &lt;&gt; &quot;0&quot;" />
+      <Custom Action="RollbackVxlanService" After="WriteVxlanConfig"
+              Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND INSTALL_SERVICE = &quot;1&quot;" />
+      <Custom Action="InstallVxlanService" After="RollbackVxlanService"
+              Condition="NOT REMOVE AND INSTALL_SERVICE = &quot;1&quot;" />
+      <Custom Action="UninstallTapDriver" Before="RemoveFiles"
+              Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

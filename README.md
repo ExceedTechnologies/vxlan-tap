@@ -1,17 +1,31 @@
 # vxlan-tap
 
 Attach a Windows host to a VXLAN segment. `vxlan-tap` bridges Ethernet frames
-between an OpenVPN **TAP-Windows6** virtual adapter and a point-to-point
-VXLAN tunnel (RFC 7348): one local underlay IP, one remote VTEP, one VNI.
+between an OpenVPN **TAP-Windows6** virtual adapter and a VXLAN segment
+(RFC 7348): one local underlay IP, one VNI, and one or more remote VTEPs.
 
 ```
  Windows apps ── TAP adapter (192.168.100.1) ── vxlan-tap ══ UDP 4789 ══ remote VTEP (Linux, switch, …)
 ```
 
-Every frame read from the TAP adapter is sent to the remote VTEP. Packets
-from the remote VTEP with the configured VNI are written to the adapter.
-Anything else is dropped. There is no MAC learning, multicast or flood
-list, because the only peer is the remote VTEP.
+Packets from a configured remote VTEP with the configured VNI are written
+to the adapter. Anything else is dropped. With one remote, every frame
+read from the adapter is sent to it.
+
+With several remotes (`remote_ips`), vxlan-tap behaves like a Linux VXLAN
+device with a static flood list:
+
+- It learns which remote each overlay MAC address is behind, from the
+  source MAC of frames received from that remote. An entry expires after
+  300 seconds without traffic and follows the MAC if it moves to another
+  remote.
+- Unicast frames to a learned MAC go only to that remote.
+- Broadcast, multicast and unknown unicast frames are sent to every remote
+  (head-end replication). ARP and other discovery traffic therefore reaches
+  everyone.
+- Frames from one remote are never relayed to another. If the remotes need
+  to talk to each other, they must also be configured as peers of each
+  other (a full mesh).
 
 ## Requirements
 
@@ -47,6 +61,51 @@ set VXLAN_TAP_ADAPTER=vxlan0      (optional; defaults to the first one)
 go test ./internal/tap -v
 ```
 
+### Installer
+
+`installer\build.ps1 [-Version 1.2.3]` builds an MSI for amd64 and one for
+arm64 into `installer\bin`. It needs Go and the .NET SDK 8 or later; the
+WiX toolset is restored from NuGet. The MSI:
+
+1. Installs `vxlan-tap.exe` to `C:\Program Files\vxlan-tap`.
+2. If no TAP-Windows6 driver is installed, installs the bundled one from
+   `tap-driver` and creates an adapter named `vxlan0`.
+3. Adds the firewall rule `vxlan-tap VXLAN (UDP-In)` for inbound UDP on
+   the VXLAN port. Pass `ADD_FIREWALL_RULE=0` to skip it, for example
+   when Group Policy already opens the port.
+4. If `VXLAN_REMOTE_IPS` is set, writes `config.yaml` to the install
+   folder with those peers, unless `WRITE_CONFIG=0`. Only single addresses of the first entry's
+   address family are used; subnets and ranges only go into the firewall
+   rule. `local_ip` is `VXLAN_LOCAL_IP`, or else the address Windows uses
+   to reach the first peer. `vni` is `VXLAN_VNI` (default 100), `tap` is
+   `TAP_ADAPTER_NAME` if that adapter exists, and the log goes to
+   `vxlan-tap.log` in the install folder. An existing, different
+   `config.yaml` is saved as `config.yaml.bak` first.
+5. If `INSTALL_SERVICE=1`, installs the `vxlan-tap` service with
+   `config.yaml` and starts it. An existing service is left as it is. If
+   the service cannot start yet, for example until a reboot finishes the
+   driver install, it starts at the next boot. The setting is remembered,
+   so upgrades put the service back.
+
+```
+msiexec /i vxlan-tap-1.0.0-amd64.msi VXLAN_REMOTE_IPS=10.0.0.2,10.0.0.3 VXLAN_VNI=100 INSTALL_SERVICE=1 /l*v install.log
+```
+
+Double-clicking the MSI, or running `msiexec /i` without `/qn`, opens a
+setup wizard with pages for these settings. They are prefilled with the
+defaults or with any properties given on the command line. The wizard's
+"Write a default config.yaml" checkbox starts unchecked unless
+`WRITE_CONFIG=1` is given. The wizard only offers the service when that
+box is checked with remote addresses, or there is already a `config.yaml`. Pass the properties directly for silent installs (`/qn`).
+
+All properties are optional. By default the rule allows port 4789 from
+any remote address, the adapter is named `vxlan0`, and no config or
+service is created. Uninstalling removes the firewall rule and, if the
+MSI installed the driver, the driver and its adapters. It also stops and
+removes a `vxlan-tap` service, and leaves `config.yaml` and the log.
+Upgrades keep the driver and adapter. The installer does not configure
+the adapter, so continue with the setup steps below.
+
 ## Setup
 
 1. **Find the adapter:** `vxlan-tap list-taps`
@@ -65,23 +124,25 @@ go test ./internal/tap -v
    ```
    netsh advfirewall firewall add rule name="VXLAN" dir=in action=allow protocol=UDP localport=4789 remoteip=10.0.0.2
    ```
+   With several remotes, list them all, separated by commas:
+   `remoteip=10.0.0.2,10.0.0.3`.
 4. **Write a config.** Copy `config.example.yaml` to `config.yaml` and edit it.
 
 ### Routing the underlay (`pin_remote_route`)
 
 If the TAP adapter has a default gateway, or any route that covers
-`remote_ip`, the encapsulated VXLAN packets would be routed into the
+a remote VTEP, the encapsulated VXLAN packets would be routed into the
 tunnel itself, and the underlay connection would fail. To prevent that,
 vxlan-tap does the following at startup, before the adapter's media status
 is set to connected:
 
 1. It finds the interface that owns `local_ip`.
-2. It looks up the best route to `remote_ip` **on that interface only**,
-   ignoring routes on the TAP and other adapters.
-3. It adds a host route (`remote_ip/32`, or `/128` for IPv6) via that
-   gateway, or on-link if the peer is on the local subnet.
+2. For each remote, it looks up the best route **on that interface
+   only**, ignoring routes on the TAP and other adapters.
+3. It adds a host route (`/32`, or `/128` for IPv6) to each remote via
+   that gateway, or on-link if the remote is on the local subnet.
 
-The route is removed when the tunnel stops. It is not persistent, so it
+The routes are removed when the tunnel stops. It is not persistent, so it
 also disappears on reboot. If an identical route already exists (for
 example after a crash), vxlan-tap adopts it and removes it on exit.
 
@@ -133,9 +194,25 @@ the DF bit set: `ping -f -l 1422 192.168.100.2`, where 1422 is 1450 minus
 28 bytes of IP and ICMP headers. On Linux,
 `tcpdump -ni eth0 udp port 4789` shows the encapsulated traffic.
 
+With several Linux peers in a full mesh, create each VXLAN device without
+`remote`, and add a flood entry for every other VTEP, including the
+Windows host:
+
+```
+ip link add vxlan100 type vxlan id 100 local 10.0.0.2 dstport 4789 dev eth0
+bridge fdb append 00:00:00:00:00:00 dev vxlan100 dst 10.0.0.1
+bridge fdb append 00:00:00:00:00:00 dev vxlan100 dst 10.0.0.3
+```
+
 ## Notes and limitations
 
-- **Point-to-point only:** one remote VTEP per instance.
+- **Static peers only:** remotes are listed in the config. There is no
+  multicast underlay, no BGP EVPN, and no static MAC entries.
+- **Flooding costs one send per remote.** Broadcast and multicast traffic
+  from Windows is sent once to each remote, so it grows with the number of
+  remotes.
+- **Remotes are identified by IP address,** and all of them use the same
+  `port`.
 - **Fixed UDP source port.** Outgoing packets use the configured port
   (4789) as the source port instead of a per-flow hash. This is RFC
   compliant and accepted by Linux and common VTEPs, but ECMP in the
@@ -144,7 +221,10 @@ the DF bit set: `ping -f -l 1422 192.168.100.2`, where 1422 is 1450 minus
   by the Windows IP stack on the underlay, so set the adapter MTU as
   shown above.
 - With `log_level: debug`, packet and drop counters are logged every
-  60s. They are also always logged on shutdown.
+  60s, along with the number of learned MACs when there are several
+  remotes. The counters are also always logged on shutdown. `tx_packets`
+  counts datagrams sent, so a flooded frame counts once per remote.
+  `tx_flooded` counts the frames that were flooded.
 
 ## Layout
 
@@ -154,6 +234,6 @@ the DF bit set: `ping -f -l 1422 192.168.100.2`, where 1422 is 1450 minus
 | `internal/config` | YAML loading and validation |
 | `internal/vxlan` | VXLAN header encode/decode |
 | `internal/tap` | TAP-Windows6 discovery and overlapped I/O |
-| `internal/tunnel` | TAP ⇄ UDP forwarding loops and counters |
-| `internal/route` | Pinned host route to the remote VTEP |
+| `internal/tunnel` | TAP ⇄ UDP forwarding loops, MAC learning, counters |
+| `internal/route` | Pinned host routes to the remote VTEPs |
 | `internal/service` | Windows service handler and install/uninstall |

@@ -1,0 +1,28 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <!-- dotnet build vxlan-tap.wixproj -c Release -p:Platform=x64|ARM64 [-p:ProductVersion=1.2.3]
+       Builds vxlan-tap.exe with Go for the platform, then the MSI. -->
+  <PropertyGroup>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.0</ProductVersion>
+    <GoArch Condition="'$(Platform)' == 'x64'">amd64</GoArch>
+    <GoArch Condition="'$(Platform)' == 'ARM64'">arm64</GoArch>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))\</RepoRoot>
+    <GoExe>$(MSBuildThisFileDirectory)obj\go\$(GoArch)\vxlan-tap.exe</GoExe>
+    <TapDriverDir>$(RepoRoot)tap-driver\$(GoArch)\</TapDriverDir>
+    <OutputName>vxlan-tap-$(ProductVersion)-$(GoArch)</OutputName>
+    <DefineConstants>ProductVersion=$(ProductVersion);GoExe=$(GoExe);RepoRoot=$(RepoRoot);TapDriverDir=$(TapDriverDir)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="WixToolset.Util.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.Firewall.wixext" Version="5.0.2" />
+    <PackageReference Include="WixToolset.UI.wixext" Version="5.0.2" />
+  </ItemGroup>
+
+  <Target Name="GoBuild" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(GoArch)' == ''" Text="Unsupported Platform '$(Platform)'; use x64 or ARM64." />
+    <Exec Command="go build -trimpath -ldflags=&quot;-s -w&quot; -o &quot;$(GoExe)&quot; ./cmd/vxlan-tap"
+          WorkingDirectory="$(RepoRoot)"
+          EnvironmentVariables="GOOS=windows;GOARCH=$(GoArch);CGO_ENABLED=0" />
+  </Target>
+</Project>

@@ -2,3 +2,6 @@
 .vscode
 .DS_Store
 *.exe
+installer/bin/
+installer/obj/
+tap-driver/
