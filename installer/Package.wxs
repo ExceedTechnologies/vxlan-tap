@@ -30,8 +30,8 @@
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall">
-  <Package Name="vxlan-tap"
-           Manufacturer="vxlan-tap"
+  <Package Name="VXLAN TAP for Windows"
+           Manufacturer="Exceed Technologies LLC"
            Version="$(ProductVersion)"
            UpgradeCode="c54b205f-4d38-4ed6-a424-871040812c55"
            Scope="perMachine"
@@ -43,7 +43,7 @@
     <Property Id="VXLAN_PORT" Value="4789" Secure="yes" />
     <Property Id="VXLAN_REMOTE_IPS" Secure="yes" />
     <Property Id="ADD_FIREWALL_RULE" Value="1" Secure="yes" />
-    <Property Id="TAP_ADAPTER_NAME" Value="vxlan0" Secure="yes" />
+    <Property Id="TAP_ADAPTER_NAME" Value="VXLAN" Secure="yes" />
     <Property Id="VXLAN_LOCAL_IP" Secure="yes" />
     <Property Id="VXLAN_VNI" Value="100" Secure="yes" />
     <!-- No default: unset means write, so silent installs with VXLAN_REMOTE_IPS still get a
@@ -59,7 +59,7 @@
     <SetProperty Id="CMDLINE_INSTALL_SERVICE" Value="[INSTALL_SERVICE]" Before="AppSearch" Sequence="both" />
     <SetProperty Id="INSTALL_SERVICE" Value="[CMDLINE_INSTALL_SERVICE]" After="AppSearch" Sequence="both"
                  Condition="CMDLINE_INSTALL_SERVICE" />
-    <Property Id="ARPCOMMENTS" Value="Bridges a TAP-Windows6 adapter onto a VXLAN segment" />
+    <Property Id="ARPCOMMENTS" Value="Connects a Windows host to a VXLAN network using a TAP adapter" />
     <!-- There is one feature, so maintenance offers only Repair and Remove. -->
     <Property Id="ARPNOMODIFY" Value="1" />
 

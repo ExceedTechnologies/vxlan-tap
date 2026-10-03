@@ -1,22 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-  Setup wizard for an interactive install. It edits the same properties as the msiexec command
-  line (see Package.wxs) and does not run with /qn.
-
-    Install:      Welcome -> VxlanTunnelDlg -> VxlanOptionsDlg -> VerifyReady -> Progress -> Exit
-    Maintenance:  MaintenanceWelcome -> MaintenanceType (Repair / Remove) -> VerifyReady
-
-  The checkboxes use CONFIG_CHECKBOX, FIREWALL_CHECKBOX and SERVICE_CHECKBOX instead of the real
-  properties. An unchecked checkbox deletes its property, which would leave WRITE_CONFIG unset
-  (meaning "write"), ADD_FIREWALL_RULE at its default "1", and let AppSearch restore a remembered
-  INSTALL_SERVICE. Leaving each dialog sets its real properties to an explicit "1" or "0".
-
-  The config checkbox starts unchecked unless WRITE_CONFIG=1 is on the command line. While it is
-  unchecked, the config-only fields (local address and VNI) are grayed out. They need both an
-  enable and a disable condition, since the checkbox that controls them is on the same dialog.
-  The service needs a config.yaml, so it is offered only when the wizard writes one or one
-  already exists.
--->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <SetProperty Id="CONFIG_CHECKBOX" Value="1" Sequence="ui" After="AppSearch"
@@ -25,6 +7,8 @@
                  Condition="ADD_FIREWALL_RULE &lt;&gt; &quot;0&quot;" />
     <SetProperty Id="SERVICE_CHECKBOX" Value="1" Sequence="ui" After="SetINSTALL_SERVICE"
                  Condition="INSTALL_SERVICE = &quot;1&quot;" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
 
     <UI Id="VxlanTapUI">
       <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
@@ -42,14 +26,19 @@
       <DialogRef Id="ResumeDlg" />
       <DialogRef Id="UserExit" />
       <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="LicenseAgreementDlg" />
       <DialogRef Id="VerifyReadyDlg" />
       <DialogRef Id="MaintenanceWelcomeDlg" />
       <DialogRef Id="MaintenanceTypeDlg" />
 
       <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
 
-      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VxlanTunnelDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg" Condition="NOT Installed" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Print" Event="DoAction" Value="WixUIPrintEula_$(sys.BUILDARCHSHORT)" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" />
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="VxlanTunnelDlg" Condition="LicenseAccepted = &quot;1&quot;" />
 
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="VxlanOptionsDlg" Order="1" Condition="NOT Installed" />
       <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
@@ -64,23 +53,25 @@
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Tunnel settings" />
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="The VXLAN segment this computer joins." />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Default tunnel settings" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Optionally configure a system default tunnel." />
 
         <Control Id="ConfigCheckBox" Type="CheckBox" X="20" Y="50" Width="330" Height="14" Property="CONFIG_CHECKBOX" CheckBoxValue="1"
-                 Text="&amp;Write a default config.yaml from these settings" />
+                 Text="&amp;Create a system default config with these settings (required for service mode)" />
 
-        <Control Id="RemoteIpsLabel" Type="Text" X="20" Y="68" Width="330" Height="12" Text="&amp;Remote VTEP addresses, comma separated:" />
-        <Control Id="RemoteIpsEdit" Type="Edit" X="20" Y="81" Width="330" Height="18" Property="VXLAN_REMOTE_IPS" Text="{1024}" />
-        <Control Id="RemoteIpsHint" Type="Text" X="20" Y="101" Width="330" Height="24" NoPrefix="yes"
-                 Text="Single addresses go into config.yaml; subnets and ranges only into the firewall rule. Leave empty to let the firewall rule allow any remote address." />
+        <Control Id="RemoteIpsLabel" Type="Text" X="20" Y="68" Width="330" Height="12" Text="&amp;Remote VTEP address(es):" 
+                 EnableCondition="CONFIG_CHECKBOX" DisableCondition="NOT CONFIG_CHECKBOX" />
+        <Control Id="RemoteIpsEdit" Type="Edit" X="20" Y="81" Width="330" Height="18" Property="VXLAN_REMOTE_IPS" Text="{1024}" 
+                 EnableCondition="CONFIG_CHECKBOX" DisableCondition="NOT CONFIG_CHECKBOX" />
+        <Control Id="RemoteIpsHint" Type="Text" X="20" Y="101" Width="330" Height="24" NoPrefix="yes" Text="Multiple VTEPs are supported, seperate with commas.  Packets are flooded to all destinations until remote MACs are learned." 
+                 EnableCondition="CONFIG_CHECKBOX" DisableCondition="NOT CONFIG_CHECKBOX" />
 
         <Control Id="LocalIpLabel" Type="Text" X="20" Y="129" Width="330" Height="12" Text="&amp;Local address:"
                  EnableCondition="CONFIG_CHECKBOX" DisableCondition="NOT CONFIG_CHECKBOX" />
         <Control Id="LocalIpEdit" Type="Edit" X="20" Y="142" Width="330" Height="18" Property="VXLAN_LOCAL_IP" Text="{64}"
                  EnableCondition="CONFIG_CHECKBOX" DisableCondition="NOT CONFIG_CHECKBOX" />
         <Control Id="LocalIpHint" Type="Text" X="20" Y="162" Width="330" Height="12" NoPrefix="yes"
-                 Text="Leave empty to use the address Windows uses to reach the first remote."
+                 Text="Leave empty to use the source address Windows uses to reach the first remote from the routing table."
                  EnableCondition="CONFIG_CHECKBOX" DisableCondition="NOT CONFIG_CHECKBOX" />
 
         <Control Id="VniLabel" Type="Text" X="20" Y="180" Width="150" Height="12" Text="V&amp;NI:"
@@ -90,10 +81,10 @@
         <Control Id="PortLabel" Type="Text" X="190" Y="180" Width="150" Height="12" Text="UDP &amp;port:" />
         <Control Id="PortEdit" Type="Edit" X="190" Y="193" Width="100" Height="18" Property="VXLAN_PORT" Text="{5}" />
         <Control Id="VniPortHint" Type="Text" X="20" Y="213" Width="330" Height="12" NoPrefix="yes"
-                 Text="The VNI is 1 to 16777215. 4789 is the standard VXLAN port." />
+                 Text="The VNI is 1 to 16777215. 4789 is the IETF standard VXLAN port." />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
-          <Publish Event="NewDialog" Value="WelcomeDlg" />
+          <Publish Event="NewDialog" Value="LicenseAgreementDlg" />
         </Control>
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
           <Publish Property="WRITE_CONFIG" Value="1" Order="1" Condition="CONFIG_CHECKBOX" />
@@ -109,27 +100,27 @@
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.InstallDirDlgBannerBitmap)" />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Setup options" />
-        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="The adapter, firewall and service that setup creates." />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="200" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Install options" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="280" Height="15" Transparent="yes" NoPrefix="yes" Text="Configure optional install tasks." />
 
         <Control Id="AdapterLabel" Type="Text" X="20" Y="52" Width="330" Height="12" Text="TAP &amp;adapter name:" />
         <Control Id="AdapterEdit" Type="Edit" X="20" Y="65" Width="330" Height="18" Property="TAP_ADAPTER_NAME" Text="{128}" />
         <Control Id="AdapterHint" Type="Text" X="20" Y="86" Width="330" Height="24" NoPrefix="yes"
-                 Text="Used for the adapter created when setup installs the TAP-Windows6 driver. An installed TAP driver and its adapters are left as they are." />
+                 Text="The installer will install the TAP driver and interface under the specified name. This step will be skipped if a TAP driver is already installed." />
 
         <Control Id="FirewallCheckBox" Type="CheckBox" X="20" Y="116" Width="330" Height="18" Property="FIREWALL_CHECKBOX" CheckBoxValue="1"
-                 Text="Add a Windows &amp;Firewall rule for inbound UDP port [VXLAN_PORT]" />
+                 Text="Add a Windows &amp;Firewall rule for incoming VXLAN packets" />
         <Control Id="FirewallHint" Type="Text" X="35" Y="135" Width="315" Height="24" NoPrefix="yes"
-                 Text="The rule allows the remote VTEP addresses, or any address when none are given. Clear this when Group Policy manages the firewall." />
+                 Text="Adds an incoming firewall rule allowing the remote VTEP addresses (or any address if not provided) to the VXLAN port UDP [VXLAN_PORT]." />
 
         <Control Id="ServiceCheckBox" Type="CheckBox" X="20" Y="166" Width="330" Height="18" Property="SERVICE_CHECKBOX" CheckBoxValue="1"
                  Text="Install and start the vxlan-tap &amp;service"
                  DisableCondition="NOT ((CONFIG_CHECKBOX AND VXLAN_REMOTE_IPS) OR EXISTING_CONFIG)" />
         <Control Id="ServiceHint" Type="Text" X="35" Y="185" Width="315" Height="24" NoPrefix="yes"
-                 Text="The service runs vxlan-tap at boot with config.yaml in the install folder."
+                 Text="The service runs vxlan-tap at boot with config.yaml from install folder.  This file will be created by the installer."
                  HideCondition="NOT ((CONFIG_CHECKBOX AND VXLAN_REMOTE_IPS) OR EXISTING_CONFIG)" />
         <Control Id="ServiceNoConfigHint" Type="Text" X="35" Y="185" Width="315" Height="24" NoPrefix="yes"
-                 Text="The service needs a config.yaml. Go back, check Write a default config.yaml, and enter the remote VTEP addresses."
+                 Text="The service needs a config.yaml. Go back, check create a default config, and enter your VXLAN configuration details."
                  HideCondition="(CONFIG_CHECKBOX AND VXLAN_REMOTE_IPS) OR EXISTING_CONFIG" />
 
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
