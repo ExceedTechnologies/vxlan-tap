@@ -98,7 +98,7 @@
         <ServiceControl Id="StopVxlanTapService" Name="vxlan-tap" Stop="both" Remove="uninstall" Wait="yes" />
       </Component>
       <Component>
-        <File Source="setup-helper.ps1" KeyPath="yes" />
+        <File Source="$(SetupHelper)" Name="setup-helper.ps1" KeyPath="yes" />
       </Component>
       <Component>
         <File Source="$(RepoRoot)config.example.yaml" KeyPath="yes" />

@@ -1,6 +1,9 @@
 <Project Sdk="WixToolset.Sdk/5.0.2">
   <!-- dotnet build vxlan-tap.wixproj -c Release -p:Platform=x64|ARM64 [-p:ProductVersion=1.2.3]
-       Builds vxlan-tap.exe with Go for the platform, then the MSI. -->
+       Builds vxlan-tap.exe with Go for the platform, then the MSI.
+       With -p:SignOutput=true -p:SignToolExe=... -p:SignDlib=... -p:SignMetadata=... it signs
+       vxlan-tap.exe and setup-helper.ps1 with Azure Artifact Signing before the MSI is compiled,
+       and the MSI after (build.ps1 fills these in). -->
   <PropertyGroup>
     <Platform Condition="'$(Platform)' == ''">x64</Platform>
     <ProductVersion Condition="'$(ProductVersion)' == ''">1.0.1</ProductVersion>
@@ -8,9 +11,14 @@
     <GoArch Condition="'$(Platform)' == 'ARM64'">arm64</GoArch>
     <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))\</RepoRoot>
     <GoExe>$(MSBuildThisFileDirectory)obj\go\$(GoArch)\vxlan-tap.exe</GoExe>
+    <!-- Staged next to the exe so signing never touches the checked-in script. -->
+    <SetupHelper>$(MSBuildThisFileDirectory)obj\go\$(GoArch)\setup-helper.ps1</SetupHelper>
     <TapDriverDir>$(RepoRoot)tap-driver\$(GoArch)\</TapDriverDir>
     <OutputName>vxlan-tap-$(ProductVersion)-$(GoArch)</OutputName>
-    <DefineConstants>ProductVersion=$(ProductVersion);GoExe=$(GoExe);RepoRoot=$(RepoRoot);TapDriverDir=$(TapDriverDir)</DefineConstants>
+    <DefineConstants>ProductVersion=$(ProductVersion);GoExe=$(GoExe);SetupHelper=$(SetupHelper);RepoRoot=$(RepoRoot);TapDriverDir=$(TapDriverDir)</DefineConstants>
+    <!-- The cabinet is embedded in the MSI, so signing the MSI covers it. -->
+    <SignOutputCabs>false</SignOutputCabs>
+    <SignCommand>&quot;$(SignToolExe)&quot; sign /v /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 /dlib &quot;$(SignDlib)&quot; /dmdf &quot;$(SignMetadata)&quot;</SignCommand>
   </PropertyGroup>
 
   <ItemGroup>
@@ -26,5 +34,23 @@
     <Exec Command="go build -trimpath -ldflags=&quot;-s -w&quot; -o &quot;$(GoExe)&quot; ./cmd/vxlan-tap"
           WorkingDirectory="$(RepoRoot)"
           EnvironmentVariables="GOOS=windows;GOARCH=$(GoArch);CGO_ENABLED=0" />
+    <Copy SourceFiles="setup-helper.ps1" DestinationFiles="$(SetupHelper)" />
+  </Target>
+
+  <Target Name="CheckSigningInputs" Condition="'$(SignOutput)' == 'true'">
+    <Error Condition="!Exists('$(SignToolExe)')" Text="SignToolExe '$(SignToolExe)' not found." />
+    <Error Condition="!Exists('$(SignDlib)')" Text="SignDlib '$(SignDlib)' not found." />
+    <Error Condition="!Exists('$(SignMetadata)')" Text="SignMetadata '$(SignMetadata)' not found." />
+  </Target>
+
+  <!-- Signs the payload before WiX compiles it into the MSI. -->
+  <Target Name="SignPayload" AfterTargets="GoBuild" BeforeTargets="BeforeBuild"
+          DependsOnTargets="CheckSigningInputs" Condition="'$(SignOutput)' == 'true'">
+    <Exec Command="$(SignCommand) &quot;$(GoExe)&quot; &quot;$(SetupHelper)&quot;" />
+  </Target>
+
+  <!-- Called by the WiX SDK's Signing target once the MSI is built. -->
+  <Target Name="SignMsi" DependsOnTargets="CheckSigningInputs">
+    <Exec Command="$(SignCommand) &quot;%(SignMsi.FullPath)&quot;" />
   </Target>
 </Project>
